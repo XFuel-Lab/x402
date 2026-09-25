@@ -191,7 +191,21 @@ export function wrapAxiosWithPayment(
           if (hookResponse.status !== 402) {
             return hookResponse; // Hook succeeded
           }
-          // Hook's retry got 402, fall through to payment
+          // Hook's retry got 402 with possibly updated requirements; pay against those.
+          try {
+            const getHeader = (name: string) => {
+              const value = hookResponse.headers[name] ?? hookResponse.headers[name.toLowerCase()];
+              return typeof value === "string" ? value : undefined;
+            };
+            const body = hookResponse.data as PaymentRequired | undefined;
+            paymentRequired = httpClient.getPaymentRequiredResponse(getHeader, body);
+          } catch (parseError) {
+            return Promise.reject(
+              new Error(
+                `Failed to parse payment requirements: ${parseError instanceof Error ? parseError.message : "Unknown error"}`,
+              ),
+            );
+          }
         }
 
         // Create payment payload

@@ -510,6 +510,77 @@ describe("wrapFetchWithPayment()", () => {
     expect(paidRequest.headers.get("PAYMENT-SIGNATURE")).toBe("encoded-payment-header");
   });
 
+  it("should create the payment payload from the hook retry 402 requirements", async () => {
+    const { x402HTTPClient: MockX402HTTPClient } = await import("@x402/core/client");
+    const updatedPaymentRequired: PaymentRequired = {
+      ...validPaymentRequired,
+      accepts: [{ ...validPaymentRequired.accepts[0], amount: "2" }],
+    };
+    const successResponse = createResponse(200, { data: "success" });
+
+    (
+      MockX402HTTPClient.prototype.getPaymentRequiredResponse as ReturnType<typeof vi.fn>
+    ).mockImplementation((getHeader: (name: string) => string | null) =>
+      getHeader("PAYMENT-REQUIRED") === "updated" ? updatedPaymentRequired : validPaymentRequired,
+    );
+    (
+      MockX402HTTPClient.prototype.handlePaymentRequired as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({ "X-Test-Hook": "retry" });
+    mockFetch
+      .mockResolvedValueOnce(
+        createResponse(402, validPaymentRequired, { "PAYMENT-REQUIRED": "initial" }),
+      )
+      .mockResolvedValueOnce(
+        createResponse(402, updatedPaymentRequired, { "PAYMENT-REQUIRED": "updated" }),
+      )
+      .mockResolvedValueOnce(successResponse);
+
+    const result = await wrappedFetch("https://api.example.com", { method: "GET" });
+
+    expect(result).toBe(successResponse);
+    expect(MockX402HTTPClient.prototype.getPaymentRequiredResponse).toHaveBeenCalledTimes(2);
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledWith(updatedPaymentRequired);
+  });
+
+  it("should build recovery payments from the hook retry 402 requirements", async () => {
+    const { x402HTTPClient: MockX402HTTPClient } = await import("@x402/core/client");
+    const updatedPaymentRequired: PaymentRequired = {
+      ...validPaymentRequired,
+      accepts: [{ ...validPaymentRequired.accepts[0], amount: "2" }],
+    };
+    const successResponse = createResponse(200, { data: "success" });
+
+    (
+      MockX402HTTPClient.prototype.getPaymentRequiredResponse as ReturnType<typeof vi.fn>
+    ).mockImplementation((getHeader: (name: string) => string | null) =>
+      getHeader("PAYMENT-REQUIRED") === "updated" ? updatedPaymentRequired : validPaymentRequired,
+    );
+    (
+      MockX402HTTPClient.prototype.handlePaymentRequired as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({ "X-Test-Hook": "retry" });
+    (
+      MockX402HTTPClient.prototype.processPaymentResult as ReturnType<typeof vi.fn>
+    ).mockResolvedValueOnce({ recovered: true });
+    mockFetch
+      .mockResolvedValueOnce(
+        createResponse(402, validPaymentRequired, { "PAYMENT-REQUIRED": "initial" }),
+      )
+      .mockResolvedValueOnce(
+        createResponse(402, updatedPaymentRequired, { "PAYMENT-REQUIRED": "updated" }),
+      )
+      .mockResolvedValueOnce(
+        createResponse(402, updatedPaymentRequired, { "PAYMENT-REQUIRED": "paid" }),
+      )
+      .mockResolvedValueOnce(successResponse);
+
+    const result = await wrappedFetch("https://api.example.com", { method: "GET" });
+
+    expect(result).toBe(successResponse);
+    expect(mockClient.createPaymentPayload).toHaveBeenNthCalledWith(1, updatedPaymentRequired);
+    expect(mockClient.createPaymentPayload).toHaveBeenNthCalledWith(2, updatedPaymentRequired);
+  });
+
   it("should preserve headers from Request object input", async () => {
     const successResponse = createResponse(200, { data: "success" });
 
