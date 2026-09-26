@@ -97,6 +97,149 @@ describe("x402HTTPClient", () => {
       ).toEqual(body.extensions);
     });
 
+    it("deep-merges a partial header bazaar namespace so header discoverable wins and body info and schema are kept", () => {
+      const httpClient = new x402HTTPClient(new x402Client());
+      const info = {
+        input: { type: "http", method: "GET" },
+        output: { type: "json", example: { ok: true } },
+      };
+      const schema = {
+        type: "object",
+        properties: { info: { type: "object" } },
+      };
+      const body = buildPaymentRequired({
+        x402Version: 2,
+        extensions: {
+          bazaar: {
+            discoverable: false,
+            info,
+            schema,
+          },
+        },
+      });
+      const header = buildPaymentRequired({
+        x402Version: 2,
+        extensions: { bazaar: { discoverable: true } },
+      });
+      const headers = {
+        "PAYMENT-REQUIRED": encodePaymentRequiredHeader(header),
+      };
+
+      expect(
+        httpClient.getPaymentRequiredResponse(
+          name => headers[name as keyof typeof headers] ?? null,
+          body,
+        ).extensions,
+      ).toEqual({
+        bazaar: {
+          discoverable: true,
+          info,
+          schema,
+        },
+      });
+    });
+
+    it("header values win when the same nested extension field is set in both sources", () => {
+      const httpClient = new x402HTTPClient(new x402Client());
+      const body = buildPaymentRequired({
+        x402Version: 2,
+        extensions: {
+          bazaar: {
+            info: {
+              input: {
+                type: "http",
+                method: "GET",
+                queryParams: { q: "body", limit: "10" },
+              },
+              output: { type: "json" },
+            },
+            tags: ["body", "extra"],
+          },
+        },
+      });
+      const header = buildPaymentRequired({
+        x402Version: 2,
+        extensions: {
+          bazaar: {
+            info: {
+              input: {
+                method: "POST",
+                queryParams: { q: "header" },
+              },
+            },
+            tags: ["header"],
+          },
+        },
+      });
+      const headers = {
+        "PAYMENT-REQUIRED": encodePaymentRequiredHeader(header),
+      };
+
+      expect(
+        httpClient.getPaymentRequiredResponse(
+          name => headers[name as keyof typeof headers] ?? null,
+          body,
+        ).extensions,
+      ).toEqual({
+        bazaar: {
+          info: {
+            input: {
+              type: "http",
+              method: "POST",
+              queryParams: { q: "header", limit: "10" },
+            },
+            output: { type: "json" },
+          },
+          tags: ["header"],
+        },
+      });
+    });
+
+    it("skips __proto__, constructor, and prototype keys when merging extensions", () => {
+      const httpClient = new x402HTTPClient(new x402Client());
+      const polluted = JSON.parse(
+        '{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}},"prototype":{"polluted":true}}',
+      ) as Record<string, unknown>;
+      const body = buildPaymentRequired({
+        x402Version: 2,
+        extensions: {
+          ...polluted,
+          bazaar: {
+            ...polluted,
+            discoverable: false,
+            info: { input: { method: "GET" } },
+            schema: { type: "object" },
+          },
+        },
+      });
+      const header = buildPaymentRequired({
+        x402Version: 2,
+        extensions: {
+          ...polluted,
+          bazaar: { ...polluted, discoverable: true },
+        },
+      });
+      const headers = {
+        "PAYMENT-REQUIRED": encodePaymentRequiredHeader(header),
+      };
+
+      const extensions = httpClient.getPaymentRequiredResponse(
+        name => headers[name as keyof typeof headers] ?? null,
+        body,
+      ).extensions;
+
+      expect(extensions).toEqual({
+        bazaar: {
+          discoverable: true,
+          info: { input: { method: "GET" } },
+          schema: { type: "object" },
+        },
+      });
+      expect(Object.getPrototypeOf(extensions)).toBe(Object.prototype);
+      expect(Object.getPrototypeOf(extensions?.bazaar)).toBe(Object.prototype);
+      expect((Object.prototype as { polluted?: boolean }).polluted).toBeUndefined();
+    });
+
     it("throws when neither a v2 header nor a v1 body is available", () => {
       const httpClient = new x402HTTPClient(new x402Client());
 

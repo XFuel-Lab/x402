@@ -36,6 +36,12 @@ type HTTPClientTransportExtension = {
   };
 };
 
+/**
+ * Parses a v1 or v2 payment-required JSON body.
+ *
+ * @param body - Optional response body
+ * @returns The body when it is a v1 or v2 PaymentRequired object
+ */
 function parsePaymentRequiredBody(body?: unknown): PaymentRequired | undefined {
   if (!body || typeof body !== "object" || !("x402Version" in body)) {
     return undefined;
@@ -49,6 +55,67 @@ function parsePaymentRequiredBody(body?: unknown): PaymentRequired | undefined {
   return undefined;
 }
 
+/** Own keys that must not be assigned during a merge (`target[key] =` follows `__proto__`). */
+const BLOCKED_EXTENSION_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * Returns whether a value is a mergeable plain object.
+ *
+ * @param value - Candidate extension value
+ * @returns True for plain objects; false for arrays, null, and class instances
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * Deep-merges extension records. Header fields (`primary`) win, including inside nested objects.
+ * Arrays and other non-plain values are taken from the header when present. Body-only fields are kept.
+ *
+ * @param primary - Header extension fields
+ * @param secondary - Body extension fields
+ * @returns Merged extension record with prototype-pollution keys omitted
+ */
+function mergeExtensionRecords(
+  primary: Record<string, unknown>,
+  secondary: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+
+  for (const key of Object.keys(secondary)) {
+    if (BLOCKED_EXTENSION_KEYS.has(key) || Object.prototype.hasOwnProperty.call(primary, key)) {
+      continue;
+    }
+    merged[key] = secondary[key];
+  }
+
+  for (const key of Object.keys(primary)) {
+    if (BLOCKED_EXTENSION_KEYS.has(key)) {
+      continue;
+    }
+    const primaryValue = primary[key];
+    const secondaryValue = secondary[key];
+    if (isPlainObject(primaryValue) && isPlainObject(secondaryValue)) {
+      merged[key] = mergeExtensionRecords(primaryValue, secondaryValue);
+    } else {
+      merged[key] = primaryValue;
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Fills header-decoded v2 payment requirements with extension fields from the JSON body.
+ *
+ * @param primary - Payment requirements decoded from the PAYMENT-REQUIRED header
+ * @param secondary - Payment requirements parsed from the JSON body
+ * @returns Header requirements, with extensions deep-merged for v2
+ */
 function mergePaymentRequiredFromBody(
   primary: PaymentRequired,
   secondary?: PaymentRequired,
@@ -57,16 +124,12 @@ function mergePaymentRequiredFromBody(
     return primary;
   }
 
-  const mergedExtensions = {
-    ...(secondary.extensions ?? {}),
-    ...(primary.extensions ?? {}),
-  };
-  const extensions = Object.keys(mergedExtensions).length > 0 ? mergedExtensions : undefined;
-
-  if (extensions === primary.extensions) {
+  if (!secondary.extensions) {
     return primary;
   }
 
+  const merged = mergeExtensionRecords(primary.extensions ?? {}, secondary.extensions);
+  const extensions = Object.keys(merged).length > 0 ? merged : undefined;
   return { ...primary, extensions };
 }
 
